@@ -1,5 +1,7 @@
-#include "pcm_samples.h"
+#ifndef __dac_spi_lib_h__
+#define __dac_spi_lib_h__
 
+namespace DacSpiLibrary {
 
 class DacSpiBase {
 public:
@@ -45,25 +47,51 @@ protected:
 };
 
 
+// 16 bit ONLY to /2 the memory consumption
 class PcmPlayer : public DacSpiBase {
 public:
   PcmPlayer(int dac_resolution, int spi_clock_pin, int spi_data_pin, int spi_latch_pin)
-    : DacSpiBase(dac_resolution, spi_clock_pin, spi_data_pin, spi_latch_pin), _sample_no(0), _samples_total(PCM_SAMPLES_COUNT) {}
+    : DacSpiBase(dac_resolution, spi_clock_pin, spi_data_pin, spi_latch_pin),
+      _samples_count(0), _sample_no(0) {}
 
   void tick() {
-    _sample_no += 1;
-    if (_sample_no >= _samples_total) {
-      _sample_no = 0;
+    if (_sample_no >= _samples_count) {
+      return;
     }
+    _sample_no += 1;
   }
 
   void draw() {
-
-    int32_t data_16bit = PCM_SAMPLES_LEFT[_sample_no];
-    _send_dac_data(data_16bit);
+    if (_sample_no >= _samples_count) {
+      return;
+    }
+    int16_t data_16bit = _samples_buffer[_sample_no];
+    _send_dac_data((int32_t)data_16bit);
   }
 
+  void play_sample(const int16_t* samples, size_t samples_count) {
+    if (samples_count > _BUFFER_SIZE) {
+      return;
+    }
+    memcpy(_samples_buffer, samples, samples_count);
+    _samples_count = samples_count;
+    _sample_no = 0;
+  }
+
+  bool is_playing() {
+    return (_sample_no < _samples_count);
+  }
+
+  const size_t get_buffer_size() { return _BUFFER_SIZE; }
+
 private:
-  unsigned long long _sample_no;
-  unsigned long long _samples_total;
+  static const size_t _BUFFER_SIZE = 8000;
+  int16_t _samples_buffer[_BUFFER_SIZE];
+
+  size_t _samples_count;
+  size_t _sample_no;
 };
+
+}  // DacSpiLibrary
+
+#endif  // !__dac_spi_lib_h__
