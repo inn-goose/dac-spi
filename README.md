@@ -1,5 +1,41 @@
 # DAC SPI
 
+oscilloscope music
+https://www.youtube.com/playlist?list=PLc4EnsriUcfQPomSF3Eh6sB143HE2r0tf
+https://drive.google.com/drive/folders/1UHvGC6-TDywFri7am8YJl5G6svK33qhC
+500 us
+
+
+oscilloscope
+https://www.batronix.com/files/Rigol/Oszilloskope/DHO800/Manual/DHO800_UserGuide_EN.pdf
+
+Steps to Enable XY Advanced Settings
+Navigate to Utility: Press the Utility key on the front panel or tap the utility menu icon on the screen.
+Access About: Go to the System tab and select About.
+Activate Test Mode: Rapidly tap the screen in the About menu three times. This activates a "Test Mode" or debug mode.
+Open XY Mode: Navigate to the Horizontal menu and enable XY mode.
+Access Advanced Settings: Open the XY setup window (hamburger menu). The "Advanced Settings" switch will now be available, allowing you to access additional, more detailed controls.
+
+
+
+## Arduino
+
+```bash
+## compile M7
+arduino-cli compile --fqbn arduino:mbed_giga:giga:target_core=cm7 ./dac_spi/dac_spi.ino
+
+## compile M4
+arduino-cli compile --fqbn arduino:mbed_giga:giga:target_core=cm4 ./dac_spi/dac_spi.ino
+
+## upload M7
+arduino-cli upload -p /dev/cu.usbmodem2101 --fqbn arduino:mbed_giga:giga:target_core=cm7 ./dac_spi/dac_spi.ino
+
+## upload M4
+arduino-cli upload -p /dev/cu.usbmodem2101 --fqbn arduino:mbed_giga:giga:target_core=cm4 ./dac_spi/dac_spi.ino
+```
+
+
+
 ## CLI
 
 ### init

@@ -123,7 +123,7 @@ if __name__ == "__main__":
                         help="")
     parser.add_argument("-s", "--stream", type=str, required=False, metavar="<filename>",
                         help="")
-    parser.add_argument("--frame-size", type=int, default=64,
+    parser.add_argument("--frame-size", type=int, default=1000,
                         help="")
     args = parser.parse_args()
 
