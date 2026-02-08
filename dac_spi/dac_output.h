@@ -30,14 +30,12 @@ static GpioPin arduinoToGpio(int arduinoPin) {
 class DacOutput {
 public:
   DacOutput(int clock_pin, int data_pin, int left_latch_pin, int right_latch_pin,
-            int resolution, unsigned long sample_rate)
+            int resolution)
     : _clock_pin(clock_pin),
       _data_pin(data_pin),
       _left_latch_pin(left_latch_pin),
       _right_latch_pin(right_latch_pin),
       _resolution(resolution),
-      _sample_rate(sample_rate),
-      _sample_period_us(1000000UL / sample_rate),
       _pcm_player_L(nullptr),
       _pcm_player_R(nullptr),
       _playing(false),
@@ -73,10 +71,11 @@ public:
   }
 
   // Non-blocking: starts playback, returns immediately
-  bool start_playback(uint32_t n_channels, uint32_t samples_count, volatile int16_t* samples, int region_id) {
+  bool start_playback(uint32_t n_channels, uint32_t sample_rate, uint32_t samples_count, volatile int16_t* samples, int region_id) {
     if (_playing) return false;
 
     _current_region = region_id;
+    unsigned long sample_period_us = 1000000UL / sample_rate;
 
     if (n_channels == 1) {
       uint32_t count = (samples_count > MAX_SAMPLES) ? MAX_SAMPLES : samples_count;
@@ -97,7 +96,7 @@ public:
     }
 
     _playing = true;
-    _ticker.attach_us(mbed::callback(&DacOutput::_isr_static), _sample_period_us);
+    _ticker.attach_us(mbed::callback(&DacOutput::_isr_static), sample_period_us);
     return true;
   }
 
@@ -134,8 +133,6 @@ private:
 
   // Config
   int _resolution;
-  unsigned long _sample_rate;
-  unsigned long _sample_period_us;
 
   // Players
   PcmPlayer* _pcm_player_L;

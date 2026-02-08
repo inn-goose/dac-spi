@@ -25,6 +25,7 @@ static volatile uint8_t* const memory_region_1 = (volatile uint8_t*)MEMORY_REGIO
 // Header at start of each region for inter-core metadata
 struct __attribute__((aligned(32))) SharedRegionHeader {
   uint32_t n_channels;     // 1 (mono) or 2 (stereo)
+  uint32_t sample_rate;    // Hz (e.g. 22050, 44100)
   uint32_t samples_count;  // total int16_t samples in payload
 };
 

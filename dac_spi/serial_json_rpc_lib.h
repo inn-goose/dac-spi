@@ -43,7 +43,7 @@ public:
 
 private:
   // default baudrate
-  static const unsigned long _DEFAULT_BAUDRATE = 1000000;
+  static const unsigned long _DEFAULT_BAUDRATE = 2000000;
 
   // balance between the protocol throughput and the board memory limit
   // works fine for UNO R3

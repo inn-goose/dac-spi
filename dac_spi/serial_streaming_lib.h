@@ -18,8 +18,8 @@ namespace SerialStreamingLibrary {
     TYPE = 0x01: metadata packet
     TYPE = 0x02: data packet
 
-  Metadata packet (TYPE=0x01, sent once before streaming):
-    [0xAB][0xCD][0xEF][0x01][n_channels: u8][bits_per_sample: u8][sample_rate: u32 LE][packet_size: u16 LE][total_samples: u32 LE]
+  Metadata packet (TYPE=0x01, sent once before streaming, 32 bytes after type):
+    [0xAB][0xCD][0xEF][0x01][n_channels: u8][bits_per_sample: u8][sample_rate: u32 LE][packet_size: u16 LE][total_samples: u32 LE][debug: u8][reserved: 19 bytes]
 
   Data packet (TYPE=0x02, sent repeatedly):
     [0xAB][0xCD][0xEF][0x02][payload: packet_size * 2 bytes]
@@ -81,7 +81,7 @@ public:
       _current_region_id(0), _region_acquired(false), _samples_dest(nullptr),
       _metadata_received(false),
       _meta_n_channels(0), _meta_bits_per_sample(0),
-      _meta_sample_rate(0), _meta_packet_size(0), _meta_total_samples(0),
+      _meta_sample_rate(0), _meta_packet_size(0), _meta_total_samples(0), _meta_debug(0),
       _meta_field_index(0) {
     _region_available[0] = nullptr;
     _region_available[1] = nullptr;
@@ -164,6 +164,7 @@ public:
 
               SharedRegionHeader* header = get_region_header(_current_region_id);
               header->n_channels = _meta_n_channels;
+              header->sample_rate = _meta_sample_rate;
               header->samples_count = _meta_packet_size;
 
               _samples_dest = get_region_samples(_current_region_id);
@@ -194,6 +195,8 @@ public:
                                 | ((uint32_t)_meta_buf[9] << 8)
                                 | ((uint32_t)_meta_buf[10] << 16)
                                 | ((uint32_t)_meta_buf[11] << 24);
+            _meta_debug = _meta_buf[12];
+            // bytes 13–31 reserved
 
             // Validate
             if (_meta_n_channels == 0 || _meta_n_channels > _MAX_CHANNELS
@@ -245,7 +248,7 @@ private:
   static const uint8_t _HEADER3 = 0xEF;
   static const uint8_t _TYPE_METADATA = 0x01;
   static const uint8_t _TYPE_DATA = 0x02;
-  static const uint8_t _META_SIZE = 12;  // bytes of metadata fields after type byte
+  static const uint8_t _META_SIZE = 32;  // bytes of metadata fields after type byte
 
   RingBuffer _ring_buffer;
   ParserState _state;
@@ -267,6 +270,7 @@ private:
   uint32_t _meta_sample_rate;
   uint16_t _meta_packet_size;
   uint32_t _meta_total_samples;
+  uint8_t _meta_debug;
   uint8_t _meta_buf[_META_SIZE];
   uint8_t _meta_field_index;
 

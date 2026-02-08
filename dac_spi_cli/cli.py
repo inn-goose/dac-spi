@@ -40,33 +40,27 @@ class ArduinoSerialClient:
 
         try:
             self.serial = serial.Serial(
-                port=self.port, baudrate=self.baudrate, timeout=self.read_timeout, write_timeout=self.write_timeout)
+                port=self.port, baudrate=self.baudrate,
+                timeout=self.read_timeout or self.RESPONSE_READ_TIMEOUT_SEC,
+                write_timeout=self.write_timeout)
         except Exception as ex:
             raise ArduinoSerialClientError(
                 f"failed to open serial port with {str(ex)}")
 
-    def _read_raw_response(self, read_timeout_sec: float) -> Tuple[Optional[str], float]:
+    def _read_raw_response(self) -> Tuple[Optional[str], float]:
         if self.serial is None:
             raise ArduinoSerialClientError("uninitialized serial protocol")
 
-        start_ts = time.time()
-        deadline_ts = start_ts + read_timeout_sec
+        start_ts = time.monotonic()
+        data = self.serial.read(1)  # blocks until 1 byte or timeout
+        elapsed = time.monotonic() - start_ts
 
-        buffer = b""
-        raw_response = None
-        resp_wait_sec = read_timeout_sec
+        if not data:
+            return None, elapsed
 
-        while time.time() < deadline_ts:
-            if self.serial.in_waiting > 0:
-                buffer += self.serial.read(self.serial.in_waiting)
-                raw_response = buffer.decode()
-                resp_wait_sec = time.time() - start_ts
-                break
-            time.sleep(0.05)
+        return data.decode(), elapsed
 
-        return raw_response, resp_wait_sec
-
-    def send_raw_data(self, data):
+    def send_raw_data(self, data, raw=False):
         if self.serial is None:
             raise ArduinoSerialClientError("uninitialized serial protocol")
 
@@ -75,10 +69,14 @@ class ArduinoSerialClient:
             raise ArduinoSerialClientError(
                 "failed to send request, 0 bytes written")
 
-        self.serial.flush()
+        if raw:
+            data = self.serial.read(1)
+            if not data:
+                raise ArduinoSerialClientError(
+                    "failed to read RAW response (timeout)")
+            return data
 
-        response, resp_wait_sec = self._read_raw_response(
-            self.RESPONSE_READ_TIMEOUT_SEC)
+        response, resp_wait_sec = self._read_raw_response()
         if response is None:
             raise ArduinoSerialClientError(
                 f"failed to read RAW response, resp_wait_sec = {resp_wait_sec}")
@@ -88,6 +86,7 @@ class ArduinoSerialClient:
 
 class DacSpiClient:
     _SYNC = b'\xAB\xCD\xEF'
+    _DATA_HEADER = b'\xAB\xCD\xEF\x02'
 
     def __init__(self, port: str, baudrate: int, init_timeout: int):
         self._connect_board(port, baudrate, init_timeout)
@@ -98,19 +97,19 @@ class DacSpiClient:
 
         self._arduino_serial_client.init()
 
-    def send_metadata(self, n_channels, bits_per_sample, sample_rate, packet_size, total_samples):
-        payload = struct.pack('<BBIHI',
+    def send_metadata(self, n_channels, bits_per_sample, sample_rate, packet_size, total_samples, debug=False):
+        payload = struct.pack('<BBIHIB19x',
                               n_channels,
                               bits_per_sample,
                               sample_rate,
                               packet_size,
-                              total_samples)
+                              total_samples,
+                              int(debug))
         raw_data = self._SYNC + b'\x01' + payload
         return self._arduino_serial_client.send_raw_data(raw_data)
 
-    def stream_frame(self, frame_buffer_np):
-        raw_data = self._SYNC + b'\x02' + frame_buffer_np.tobytes()
-        return self._arduino_serial_client.send_raw_data(raw_data)
+    def stream_frame(self, packet_buf: bytearray, raw=False):
+        return self._arduino_serial_client.send_raw_data(packet_buf, raw=raw)
 
 
 def connect_dac_spi(port: str, baudrate: int, init_timeout: int):
@@ -142,7 +141,7 @@ def _parse_wav_file(wav_file: str):
     return n_channels, total_samples, samples_buffer, resolution, sample_rate
 
 
-def stream_wav_file(dac_spi: DacSpiClient, wav_file: str, packet_size: int):
+def stream_wav_file(dac_spi: DacSpiClient, wav_file: str, packet_size: int, debug: bool = False):
     n_channels, total_samples, samples_buffer, resolution, sample_rate = _parse_wav_file(
         wav_file)
 
@@ -156,30 +155,55 @@ def stream_wav_file(dac_spi: DacSpiClient, wav_file: str, packet_size: int):
         f"streaming | mode: {mode}, total_samples: {total_samples}, resolution: {resolution} bit, sample_rate: {sample_rate} Hz, packet_size: {packet_size}, num_packets: {num_packets}")
 
     # Send metadata once
-    res = dac_spi.send_metadata(n_channels, resolution, sample_rate, packet_size, total_samples)
+    res = dac_spi.send_metadata(n_channels, resolution, sample_rate, packet_size, total_samples, debug=debug)
     print(f"metadata sent, res: {res}")
 
+    # Pre-allocate reusable packet buffer: 4-byte header + payload
+    packet_buf = bytearray(DacSpiClient._DATA_HEADER + bytes(packet_size * 2))
+    payload_view = np.frombuffer(packet_buf, dtype='<i2', offset=4)
+
     # Stream data packets
-    for i in range(num_packets):
-        start = i * packet_size
-        end = start + packet_size
-        frame = samples_buffer[start:end]
+    if debug:
+        for i in range(num_packets):
+            start = i * packet_size
+            end = start + packet_size
+            frame = samples_buffer[start:end]
 
-        # Zero-pad last packet if needed
-        if len(frame) < packet_size:
-            frame = np.pad(frame, (0, packet_size - len(frame)), constant_values=0)
+            if len(frame) < packet_size:
+                payload_view[len(frame):] = 0
+                payload_view[:len(frame)] = frame
+            else:
+                payload_view[:] = frame
 
-        ts = time.time()
-        res = dac_spi.stream_frame(frame.astype('<i2'))
-        elapsed = time.time() - ts
-        print(f"packet {i + 1}/{num_packets}: {elapsed:.04f} sec, res: {res}")
+            ts = time.monotonic()
+            res = dac_spi.stream_frame(packet_buf)
+            elapsed = time.monotonic() - ts
+            print(f"packet {i + 1}/{num_packets}: {elapsed:.04f} sec, res: {res}")
+    else:
+        loop_start = time.monotonic()
+        for i in range(num_packets):
+            start = i * packet_size
+            end = start + packet_size
+            frame = samples_buffer[start:end]
+
+            if len(frame) < packet_size:
+                payload_view[len(frame):] = 0
+                payload_view[:len(frame)] = frame
+            else:
+                payload_view[:] = frame
+
+            dac_spi.stream_frame(packet_buf, raw=True)
+
+        total_elapsed = time.monotonic() - loop_start
+        avg_ms = (total_elapsed / num_packets) * 1000
+        print(f"done | {num_packets} packets in {total_elapsed:.03f} sec, avg {avg_ms:.02f} ms/pkt")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WAV converter")
     parser.add_argument("port", type=str, metavar="<port>",
                         help="Specify the USP port address for the serial connection")
-    parser.add_argument("--baudrate", type=int, default=1000000,
+    parser.add_argument("--baudrate", type=int, default=2000000,
                         metavar="<baud>", help="Set the serial connection speed")
     parser.add_argument("--init-timeout", type=int, default=3, metavar="<sec>",
                         help="Set the MAX Arduino's reset-on-connect timeout in seconds")
@@ -187,6 +211,8 @@ if __name__ == "__main__":
                         help="")
     parser.add_argument("--frame-size", type=int, default=1000,
                         help="")
+    parser.add_argument("--debug", action="store_true", default=False,
+                        help="Print per-packet timing")
     args = parser.parse_args()
 
     # connect
@@ -194,4 +220,4 @@ if __name__ == "__main__":
         args.port, args.baudrate, args.init_timeout)
 
     if args.stream is not None:
-        stream_wav_file(dac_spi, args.stream, args.frame_size)
+        stream_wav_file(dac_spi, args.stream, args.frame_size, debug=args.debug)

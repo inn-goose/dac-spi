@@ -79,11 +79,12 @@ void loop_m4() {
     // Read header from shared memory
     SharedRegionHeader* header = get_region_header(0);
     uint32_t n_channels = header->n_channels;
+    uint32_t sample_rate = header->sample_rate;
     uint32_t samples_count = header->samples_count;
 
     // Get samples pointer and start playback (non-blocking)
     volatile int16_t* samples = get_region_samples(0);
-    dac_output.start_playback(n_channels, samples_count, samples, 0);
+    dac_output.start_playback(n_channels, sample_rate, samples_count, samples, 0);
 
     // Wait for playback to complete
     while (dac_output.is_busy()) {
@@ -101,11 +102,12 @@ void loop_m4() {
     // Read header from shared memory
     SharedRegionHeader* header = get_region_header(1);
     uint32_t n_channels = header->n_channels;
+    uint32_t sample_rate = header->sample_rate;
     uint32_t samples_count = header->samples_count;
 
     // Get samples pointer and start playback (non-blocking)
     volatile int16_t* samples = get_region_samples(1);
-    dac_output.start_playback(n_channels, samples_count, samples, 1);
+    dac_output.start_playback(n_channels, sample_rate, samples_count, samples, 1);
 
     // Wait for playback to complete
     while (dac_output.is_busy()) {

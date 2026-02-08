@@ -37,8 +37,17 @@ arduino-cli upload -p /dev/cu.usbmodemXXXX --fqbn arduino:mbed_giga:giga dac_spi
 
 All packets share a 4-byte header: `[0xAB][0xCD][0xEF][TYPE]`
 
-Metadata packet (TYPE=0x01, sent once before streaming):
-`[0xAB][0xCD][0xEF][0x01][n_channels: u8][bits_per_sample: u8][sample_rate: u32 LE][packet_size: u16 LE][total_samples: u32 LE]`
+Metadata packet (TYPE=0x01, sent once before streaming, 32 bytes after type):
+```
+Offset  Size  Field
+0       1     n_channels: u8
+1       1     bits_per_sample: u8
+2       4     sample_rate: u32 LE
+6       2     packet_size: u16 LE
+8       4     total_samples: u32 LE
+12      1     debug: u8
+13      19    reserved (zeros)
+```
 
 Data packet (TYPE=0x02, sent repeatedly):
 `[0xAB][0xCD][0xEF][0x02][payload: packet_size × 2 bytes]`

@@ -17,10 +17,9 @@ static const int DATA_PIN = 5;
 static const int LEFT_LATCH_ENABLE_PIN = 8;
 static const int RIGHT_LATCH_ENABLE_PIN = 9;
 static const int DAC_RESOLUTION = 16;  // bit
-static const unsigned long DAC_SAMPLE_RATE = 22050;  // Hz
 
 DacOutput dac_output(CLOCK_PIN, DATA_PIN, LEFT_LATCH_ENABLE_PIN, RIGHT_LATCH_ENABLE_PIN,
-                     DAC_RESOLUTION, DAC_SAMPLE_RATE);
+                     DAC_RESOLUTION);
 #endif
 
 
