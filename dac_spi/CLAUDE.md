@@ -33,14 +33,18 @@ arduino-cli upload -p /dev/cu.usbmodemXXXX --fqbn arduino:mbed_giga:giga dac_spi
 - **core_hsem.h** - Hardware semaphore wrappers for inter-core sync
 - **core_mem.h** - Shared memory regions at 0x38000000 (D4 SRAM), cache management
 
-### Serial Streaming Protocol
+### Serial Streaming Protocol (v2)
 
-Packet format: `[0xAB][0xCD][N_CHANNELS][LEN_LO][LEN_HI][PAYLOAD...]`
-- N_CHANNELS: 1 (mono) or 2 (stereo)
-- LEN: sample count as 16-bit little-endian
-- PAYLOAD: LEN × int16_t samples (little-endian)
+All packets share a 4-byte header: `[0xAB][0xCD][0xEF][TYPE]`
 
-Device acknowledges each packet by sending `1`.
+Metadata packet (TYPE=0x01, sent once before streaming):
+`[0xAB][0xCD][0xEF][0x01][n_channels: u8][bits_per_sample: u8][sample_rate: u32 LE][packet_size: u16 LE][total_samples: u32 LE]`
+
+Data packet (TYPE=0x02, sent repeatedly):
+`[0xAB][0xCD][0xEF][0x02][payload: packet_size × 2 bytes]`
+- Last packet is zero-padded to packet_size
+
+Device acknowledges each packet (metadata and data) by sending `1`.
 
 ### Key Constants
 

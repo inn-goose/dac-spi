@@ -11,9 +11,18 @@ namespace SerialStreamingLibrary {
   With packet timeout protection
   Writes directly to shared memory regions for dual-core operation
 
-  Packet format:
-    [0xAB][0xCD][N_CHANNELS][LEN_LO][LEN_HI][PAYLOAD...]
-    PAYLOAD = LEN * int16_t (little-endian)
+  Protocol v2:
+
+  Common header (all packets):
+    [0xAB][0xCD][0xEF][TYPE]
+    TYPE = 0x01: metadata packet
+    TYPE = 0x02: data packet
+
+  Metadata packet (TYPE=0x01, sent once before streaming):
+    [0xAB][0xCD][0xEF][0x01][n_channels: u8][bits_per_sample: u8][sample_rate: u32 LE][packet_size: u16 LE][total_samples: u32 LE]
+
+  Data packet (TYPE=0x02, sent repeatedly):
+    [0xAB][0xCD][0xEF][0x02][payload: packet_size * 2 bytes]
 */
 
 using namespace CoreMemory;
@@ -58,9 +67,9 @@ private:
 enum ParserState {
   WAIT_HEADER1,
   WAIT_HEADER2,
-  WAIT_NCHANNELS,
-  WAIT_LEN_LO,
-  WAIT_LEN_HI,
+  WAIT_HEADER3,
+  WAIT_TYPE,
+  READ_META_FIELDS,
   WAIT_PAYLOAD
 };
 
@@ -68,8 +77,12 @@ class StreamingParser {
 public:
   StreamingParser()
     : _ring_buffer(), _state(WAIT_HEADER1), _last_byte_read_ts(0),
-      _n_channels(0), _samples_count(0), _payload_index(0),
-      _current_low_byte(0), _current_region_id(0), _samples_dest(nullptr) {
+      _payload_index(0), _current_low_byte(0),
+      _current_region_id(0), _region_acquired(false), _samples_dest(nullptr),
+      _metadata_received(false),
+      _meta_n_channels(0), _meta_bits_per_sample(0),
+      _meta_sample_rate(0), _meta_packet_size(0), _meta_total_samples(0),
+      _meta_field_index(0) {
     _region_available[0] = nullptr;
     _region_available[1] = nullptr;
   }
@@ -88,12 +101,17 @@ public:
   }
 
   void reset() {
+    // Release acquired region back to pool (without HSEM — M4 never sees partial data)
+    if (_region_acquired && _region_available[_current_region_id]) {
+      *_region_available[_current_region_id] = true;
+    }
+    _region_acquired = false;
+
     _state = WAIT_HEADER1;
-    _n_channels = 0;
-    _samples_count = 0;
     _payload_index = 0;
     _current_low_byte = 0;
     _samples_dest = nullptr;
+    _meta_field_index = 0;
   }
 
   void parse() {
@@ -111,7 +129,7 @@ public:
 
         case WAIT_HEADER2:
           if (b == _HEADER2) {
-            _state = WAIT_NCHANNELS;
+            _state = WAIT_HEADER3;
           } else if (b == _HEADER1) {
             // stay in WAIT_HEADER2: handles 0xAB 0xAB 0xCD re-sync
           } else {
@@ -119,40 +137,74 @@ public:
           }
           break;
 
-        case WAIT_NCHANNELS:
-          _n_channels = b;
-          if (_n_channels == 0 || _n_channels > _MAX_CHANNELS) {
-            reset();
+        case WAIT_HEADER3:
+          if (b == _HEADER3) {
+            _state = WAIT_TYPE;
+          } else if (b == _HEADER1) {
+            _state = WAIT_HEADER2;
           } else {
-            _state = WAIT_LEN_LO;
+            _state = WAIT_HEADER1;
           }
           break;
 
-        case WAIT_LEN_LO:
-          _samples_count = b;
-          _state = WAIT_LEN_HI;
+        case WAIT_TYPE:
+          if (b == _TYPE_METADATA) {
+            // Reset streaming state for new metadata
+            _metadata_received = false;
+            _meta_field_index = 0;
+            _state = READ_META_FIELDS;
+          } else if (b == _TYPE_DATA) {
+            if (!_metadata_received) {
+              // No metadata yet, can't parse data
+              _state = WAIT_HEADER1;
+            } else {
+              // Acquire region and prepare for payload
+              _acquire_region();
+              _region_acquired = true;
+
+              SharedRegionHeader* header = get_region_header(_current_region_id);
+              header->n_channels = _meta_n_channels;
+              header->samples_count = _meta_packet_size;
+
+              _samples_dest = get_region_samples(_current_region_id);
+              _payload_index = 0;
+              _current_low_byte = 0;
+              _state = WAIT_PAYLOAD;
+            }
+          } else {
+            // Invalid type, resync
+            _state = WAIT_HEADER1;
+          }
           break;
 
-        case WAIT_LEN_HI:
-          _samples_count |= ((uint32_t)b << 8);
+        case READ_META_FIELDS:
+          _meta_buf[_meta_field_index++] = b;
 
-          if (_samples_count == 0 || _samples_count > MAX_SAMPLES_PER_REGION || (_samples_count % _n_channels) != 0) {
-            reset();
-          } else {
-            // Acquire region (may block if both busy)
-            _acquire_region();
+          if (_meta_field_index >= _META_SIZE) {
+            // Parse metadata fields from buffer
+            _meta_n_channels = _meta_buf[0];
+            _meta_bits_per_sample = _meta_buf[1];
+            _meta_sample_rate = (uint32_t)_meta_buf[2]
+                              | ((uint32_t)_meta_buf[3] << 8)
+                              | ((uint32_t)_meta_buf[4] << 16)
+                              | ((uint32_t)_meta_buf[5] << 24);
+            _meta_packet_size = (uint16_t)_meta_buf[6]
+                              | ((uint16_t)_meta_buf[7] << 8);
+            _meta_total_samples = (uint32_t)_meta_buf[8]
+                                | ((uint32_t)_meta_buf[9] << 8)
+                                | ((uint32_t)_meta_buf[10] << 16)
+                                | ((uint32_t)_meta_buf[11] << 24);
 
-            // Write header to shared memory
-            SharedRegionHeader* header = get_region_header(_current_region_id);
-            header->n_channels = _n_channels;
-            header->samples_count = _samples_count;
-
-            // Get samples destination pointer
-            _samples_dest = get_region_samples(_current_region_id);
-
-            _state = WAIT_PAYLOAD;
-            _payload_index = 0;
-            _current_low_byte = 0;
+            // Validate
+            if (_meta_n_channels == 0 || _meta_n_channels > _MAX_CHANNELS
+                || _meta_packet_size == 0 || _meta_packet_size > MAX_SAMPLES_PER_REGION) {
+              reset();
+            } else {
+              _metadata_received = true;
+              // Ack metadata
+              Serial.print("1");
+              _state = WAIT_HEADER1;
+            }
           }
           break;
 
@@ -166,11 +218,11 @@ public:
           }
           _payload_index++;
 
-          if (_payload_index >= _samples_count * 2) {
+          if (_payload_index >= _meta_packet_size * 2) {
             _commit_region();
+            _region_acquired = false;
             reset();
-            // ack to producer to start a new transmission
-            // TODO: akward solution. rethink me
+            // Ack to producer to start a new transmission
             Serial.print("1");
           }
           break;
@@ -178,7 +230,7 @@ public:
     }
 
     // Timeout: only meaningful when mid-packet and ring buffer is drained
-    if (_state != WAIT_HEADER1 && _state != WAIT_HEADER2) {
+    if (_state != WAIT_HEADER1 && _state != WAIT_HEADER2 && _state != WAIT_HEADER3) {
       if (millis() - _last_byte_read_ts > _READ_TIMEOUT_MS) {
         reset();
       }
@@ -190,20 +242,33 @@ private:
   static const uint8_t _MAX_CHANNELS = 2;
   static const uint8_t _HEADER1 = 0xAB;
   static const uint8_t _HEADER2 = 0xCD;
+  static const uint8_t _HEADER3 = 0xEF;
+  static const uint8_t _TYPE_METADATA = 0x01;
+  static const uint8_t _TYPE_DATA = 0x02;
+  static const uint8_t _META_SIZE = 12;  // bytes of metadata fields after type byte
 
   RingBuffer _ring_buffer;
   ParserState _state;
   unsigned long _last_byte_read_ts;
 
-  uint8_t _n_channels;
-  uint32_t _samples_count;
   uint32_t _payload_index;
   uint8_t _current_low_byte;
 
   // Region management
   int _current_region_id;
+  bool _region_acquired;
   volatile int16_t* _samples_dest;
   volatile bool* _region_available[2];
+
+  // Metadata
+  bool _metadata_received;
+  uint8_t _meta_n_channels;
+  uint8_t _meta_bits_per_sample;
+  uint32_t _meta_sample_rate;
+  uint16_t _meta_packet_size;
+  uint32_t _meta_total_samples;
+  uint8_t _meta_buf[_META_SIZE];
+  uint8_t _meta_field_index;
 
   void _acquire_region() {
     // Try current region first
@@ -239,7 +304,7 @@ private:
 
 #if defined(CORE_CM7)
     // Clean cache for header + samples
-    size_t bytes_written = HEADER_SIZE + (_samples_count * sizeof(int16_t));
+    size_t bytes_written = HEADER_SIZE + (_meta_packet_size * sizeof(int16_t));
     cleanDCache((void*)get_memory_region(_current_region_id), bytes_written);
 #endif
 
