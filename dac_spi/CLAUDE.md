@@ -77,93 +77,7 @@ Use `CORE_CM7` / `CORE_CM4` defines to target specific cores. The Arduino GIGA c
 
 ## Tier 1: Critical Path (MUST HAVE)
 
-### 1.1 Hardware SPI — THE GAME CHANGER
-
-**Problem:** Bit-banged SPI consumes 60%+ of M4 CPU
-- `dac_spi_lib.h:35-46`: 48 digitalWrite() calls per sample
-- digitalWrite() ≈ 200-400 cycles on STM32
-- At 44.1kHz stereo: **3.5M GPIO ops/sec** — impossible with bit-bang
-
-**Solution:** Use STM32H747 hardware SPI peripheral
-
-**Implementation:**
-```cpp
-// Replace _send_dac_data() with hardware SPI
-#include <SPI.h>
-
-// In setup():
-SPI.begin();
-SPI.beginTransaction(SPISettings(20000000, MSBFIRST, SPI_MODE0));
-
-// In draw():
-digitalWrite(_spi_latch_pin, HIGH);
-SPI.transfer16((uint16_t)data);  // Single 16-bit transfer
-digitalWrite(_spi_latch_pin, LOW);
-```
-
-**Arduino GIGA SPI Pin Mapping:**
-| SPI   | MOSI | MISO | SCK  | Notes |
-|-------|------|------|------|-------|
-| SPI   | D11  | D12  | D13  | Default, directly accessible |
-| SPI1  | D8   | A6   | A5   | Alternative |
-
-**Current pins vs SPI:**
-- Current: CLOCK=6, DATA=5 — NOT on hardware SPI!
-- **Must rewire to use D13 (SCK) and D11 (MOSI)**
-- Latch pins (8, 9) can stay — they're just GPIO toggles
-
-**Files to modify:**
-- `dac_spi.ino`: Change pin definitions
-- `dac_spi_lib.h`: Replace `_send_dac_data()` with SPI.transfer16()
-- Physical wiring: Move CLOCK to D13, DATA to D11
-
-**Estimated gain:** 50-100x faster per sample
-**Difficulty:** Medium (requires rewiring)
-
----
-
-### 1.2 SPI + DMA — ZERO CPU DURING TRANSFER
-
-**Problem:** Even hardware SPI blocks CPU during transfer
-
-**Solution:** DMA-driven SPI transfers entire buffer without CPU
-
-**Implementation Strategy:**
-```cpp
-// Use mbed SPI with DMA (Arduino GIGA supports this)
-#include <mbed.h>
-
-mbed::SPI spi(PB_5, PB_4, PB_3);  // MOSI, MISO, SCK
-
-// Async DMA transfer
-spi.transfer(tx_buffer, rx_buffer, length, callback, SPI_EVENT_COMPLETE);
-```
-
-**Challenge:** DAC needs latch toggle between each sample
-- Option A: Use hardware CS (NSS pin) as latch — may need level inversion
-- Option B: Use timer-triggered DMA with GPIO — complex but powerful
-- Option C: DMA transfer + software latch in completion callback — simpler
-
-**Recommended: Option C for initial implementation**
-```cpp
-// Transfer N samples via DMA, toggle latch in callback
-void dma_complete_callback(int event) {
-  digitalWrite(_latch_pin, LOW);
-  digitalWrite(_latch_pin, HIGH);  // Latch the data
-  // Queue next sample or signal completion
-}
-```
-
-**Files to modify:**
-- `dac_spi_lib.h`: Complete rewrite for DMA
-- `dac_output.h`: Remove per-sample ISR, use DMA completion
-
-**Estimated gain:** Near-zero CPU usage during playback
-**Difficulty:** Hard (requires deep mbed/HAL knowledge)
-
----
-
-### 1.3 Direct GPIO Register Access (Quick Win)
+### 1.1 Direct GPIO Register Access (Quick Win) — DONE
 
 **Problem:** digitalWrite() has overhead (pin validation, etc.)
 
@@ -182,6 +96,8 @@ latch_port->BSRR = latch_mask << 16;     // Set LOW
 
 **Files to modify:**
 - `dac_spi_lib.h`: Cache port/mask in constructor, use BSRR
+
+**Status:** Implemented. `dac_output.h` maps Arduino pins via `arduinoToGpio()`, `dac_spi_lib.h` uses `HAL_GPIO_WritePin()` with cached port/pin.
 
 **Estimated gain:** 10-20x faster GPIO (200 cycles → 1 cycle)
 **Difficulty:** Easy
@@ -348,57 +264,23 @@ if (dac_output.is_busy() && read_trigger_next) {
 
 ---
 
-## Architecture Question: Is Dual-Core Necessary?
+## Architecture Note: Dual-Core
 
-**At 44.1kHz with HW SPI + DMA:**
-- Serial receive: ~5% CPU
-- DMA setup: ~1% CPU
-- Everything else: Near 0%
-
-**Answer:** Dual-core becomes OPTIONAL with proper DMA implementation.
-
-**However, dual-core provides:**
+Dual-core provides:
 - Clean separation of concerns
 - Guaranteed real-time on M4 (no serial jitter)
 - Future expansion (effects processing on M7?)
-
-**Recommendation:** Keep dual-core but simplify. M4 becomes purely "DMA babysitter."
-
----
-
-## Theoretical Maximum Sample Rate
-
-**Limiting factors:**
-
-1. **SPI Clock:** STM32H747 SPI can run up to 100+ MHz
-   - 16-bit @ 20 MHz = 1.25M samples/sec per channel
-   - **Not the limit**
-
-2. **Serial bandwidth:** USB Full Speed = 12 Mbps
-   - 16-bit stereo: 32 bits/frame
-   - Max: 12M / 32 = 375,000 frames/sec
-   - **Theoretical: 375 kHz stereo**
-
-3. **Shared memory bandwidth:** AXI bus @ 240 MHz
-   - **Not the limit**
-
-4. **Practical limit:** USB latency, buffer sizes, interrupt overhead
-   - **Realistic: 96 kHz stereo** easily achievable
-   - **Aggressive: 192 kHz stereo** possible with optimization
 
 ---
 
 ## Implementation Priority Order
 
-| Priority | Task | Gain | Effort | Files |
-|----------|------|------|--------|-------|
-| 1 | Direct GPIO registers | 10-20x GPIO | Easy | dac_spi_lib.h |
-| 2 | Hardware SPI | 50-100x SPI | Medium | dac_spi_lib.h, wiring |
-| 3 | Serial bulk read | 5-10x serial | Easy | serial_streaming_lib.h |
-| 4 | Remove HSEM FastTake | Minor | Easy | core_hsem.h |
-| 5 | Lighter barriers | Minor | Easy | core_mem.h |
-| 6 | Eliminate buffer copies | -32KB/packet | Medium | dac_output.h, dac_spi_lib.h |
-| 7 | SPI DMA | Near-zero CPU | Hard | Full rewrite |
+| Priority | Task | Gain | Effort | Files | Status |
+|----------|------|------|--------|-------|--------|
+| ~~1~~ | ~~Direct GPIO registers~~ | 10-20x GPIO | Easy | dac_spi_lib.h | DONE |
+| 2 | Serial bulk read | 5-10x serial | Easy | serial_streaming_lib.h | TODO |
+| ~~3~~ | ~~Lighter barriers~~ | Minor | Easy | core_mem.h | DONE |
+| 4 | Eliminate buffer copies | -32KB/packet | Medium | dac_output.h, dac_spi_lib.h | TODO |
 
 ---
 
@@ -407,20 +289,8 @@ if (dac_output.is_busy() && read_trigger_next) {
 - [x] Replace `__DSB()` with `__DMB()` in core_mem.h
 - [x] ~~Remove `HAL_HSEM_FastTake()`~~ — NOT VALID (required for interrupt signaling)
 - [ ] Add `Serial.readBytes()` bulk read in serial_streaming_lib.h
-- [ ] Cache GPIO port/mask for latch pins in dac_spi_lib.h
-- [ ] Increase serial baud rate to 2000000
-
----
-
-## Hardware SPI Migration Checklist
-
-- [ ] Verify D13 (SCK) and D11 (MOSI) available on your board
-- [ ] Rewire: CLOCK from pin 6 → D13
-- [ ] Rewire: DATA from pin 5 → D11
-- [ ] Update pin definitions in dac_spi.ino
-- [ ] Replace `_send_dac_data()` with `SPI.transfer16()`
-- [ ] Test at 8kHz first, then increase sample rate
-- [ ] Benchmark improvement
+- [x] Cache GPIO port/mask for latch pins in dac_spi_lib.h
+- [x] Increase serial baud rate to 2000000 (cli.py default)
 
 ---
 

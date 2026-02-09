@@ -2,6 +2,7 @@
 #define __dac_spi_lib_h__
 
 #include "stm32h7xx_hal.h"
+#include "core_mem.h"
 
 namespace DacSpiLibrary {
 
@@ -62,6 +63,8 @@ protected:
 // 16 bit ONLY to /2 the memory consumption
 class PcmPlayer : public DacSpiBase {
 public:
+  static const size_t BUFFER_SIZE = CoreMemory::MAX_SAMPLES_PER_REGION;
+
   PcmPlayer(int dac_resolution,
             GPIO_TypeDef* clock_port, uint16_t clock_pin,
             GPIO_TypeDef* data_port, uint16_t data_pin,
@@ -85,7 +88,7 @@ public:
   }
 
   void play_sample(const int16_t* samples, size_t samples_count) {
-    if (samples_count > _BUFFER_SIZE) {
+    if (samples_count > BUFFER_SIZE) {
       return;
     }
     memcpy(_samples_buffer, samples, samples_count * sizeof(int16_t));
@@ -97,11 +100,8 @@ public:
     return (_sample_no < _samples_count);
   }
 
-  const size_t get_buffer_size() { return _BUFFER_SIZE; }
-
 private:
-  static const size_t _BUFFER_SIZE = 8000;
-  int16_t _samples_buffer[_BUFFER_SIZE];
+  int16_t _samples_buffer[BUFFER_SIZE];
 
   size_t _samples_count;
   size_t _sample_no;

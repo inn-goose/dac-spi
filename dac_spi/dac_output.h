@@ -128,6 +128,9 @@ private:
     }
   }
 
+  // Derived from PcmPlayer (which derives from core_mem.h)
+  static const size_t MAX_SAMPLES = PcmPlayer::BUFFER_SIZE;
+
   // Pins
   int _clock_pin, _data_pin, _left_latch_pin, _right_latch_pin;
 
@@ -146,8 +149,7 @@ private:
   volatile int _current_region;
   volatile int _completed_region;
 
-  // Static buffers (no VLA)
-  static const size_t MAX_SAMPLES = 8000;
+  // Sample buffers
   int16_t _buf_L[MAX_SAMPLES];
   int16_t _buf_R[MAX_SAMPLES];
 };

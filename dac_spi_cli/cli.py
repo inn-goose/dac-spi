@@ -209,7 +209,7 @@ if __name__ == "__main__":
                         help="Set the MAX Arduino's reset-on-connect timeout in seconds")
     parser.add_argument("-s", "--stream", type=str, required=False, metavar="<filename>",
                         help="")
-    parser.add_argument("--frame-size", type=int, default=1000,
+    parser.add_argument("--frame-size", type=int, default=8000,
                         help="")
     parser.add_argument("--debug", action="store_true", default=False,
                         help="Print per-packet timing")
