@@ -11,15 +11,13 @@ using namespace SerialStreamingLibrary;
 
 
 // M4 DAC wiring and configuration
+// SPI6 handles MOSI (PA7) and SCK (PB3) — configured in dac_output.h
 #if defined(CORE_CM4)
-static const int CLOCK_PIN = 6;
-static const int DATA_PIN = 5;
 static const int LEFT_LATCH_ENABLE_PIN = 8;
 static const int RIGHT_LATCH_ENABLE_PIN = 9;
 static const int DAC_RESOLUTION = 16;  // bit
 
-DacOutput dac_output(CLOCK_PIN, DATA_PIN, LEFT_LATCH_ENABLE_PIN, RIGHT_LATCH_ENABLE_PIN,
-                     DAC_RESOLUTION);
+DacOutput dac_output(LEFT_LATCH_ENABLE_PIN, RIGHT_LATCH_ENABLE_PIN, DAC_RESOLUTION);
 #endif
 
 

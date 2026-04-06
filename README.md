@@ -36,6 +36,16 @@ arduino-cli upload -p /dev/cu.usbmodem2101 --fqbn arduino:mbed_giga:giga:target_
 
 
 
+## Wiring
+
+| Signal | Arduino Pin | Physical Location |
+|--------|-------------|-------------------|
+| DATA (SPI6 MOSI) | D5 | Digital header |
+| CLOCK (SPI6 SCK) | SPI header, middle row, left pin | 6-pin ICSP/SPI header |
+| LEFT LATCH | D8 | Digital header |
+| RIGHT LATCH | D9 | Digital header |
+
+
 ## CLI
 
 ### init
@@ -61,14 +71,18 @@ export PYTHONPATH=./dac_spi_cli/:$PYTHONPATH
 ### run
 
 ```bash
-./dac_spi_cli/cli.py ./samples/32k_tone_500.wav
+# stream a WAV file to the DAC
+./dac_spi_cli/cli.py /dev/cu.usbmodem2101 -s ./samples/32k_tone_500.wav
+
+# with debug timing output
+./dac_spi_cli/cli.py /dev/cu.usbmodem2101 -s ./samples/32k_tone_500.wav --debug
 ```
 
 
 
-## Arduino
+## Arduino (legacy)
 
-### Json RPC
+### Json RPC (deprecated, replaced by binary streaming protocol v2)
 
 ```json
 {"jsonrpc":"2.0", "id":0, "method": "start_player", "params": []}

@@ -94,8 +94,14 @@ public:
   }
 
   void loop() {
-    while (Serial.available()) {
-      _ring_buffer.push(Serial.read());
+    int avail = Serial.available();
+    if (avail > 0) {
+      uint8_t buf[256];
+      int count = min(avail, (int)sizeof(buf));
+      Serial.readBytes(buf, count);
+      for (int i = 0; i < count; i++) {
+        _ring_buffer.push(buf[i]);
+      }
     }
     parse();
   }

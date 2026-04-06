@@ -11,7 +11,7 @@ using namespace DacSpiLibrary;
 class DacOutput;
 static DacOutput* g_dac_instance = nullptr;
 
-// STM32 GPIO mappings for Arduino GIGA pins
+// STM32 GPIO mappings for Arduino GIGA latch pins
 struct GpioPin {
   GPIO_TypeDef* port;
   uint16_t pin;
@@ -19,52 +19,88 @@ struct GpioPin {
 
 static GpioPin arduinoToGpio(int arduinoPin) {
   switch (arduinoPin) {
-    case 5:  return {GPIOA, GPIO_PIN_7};   // DATA
-    case 6:  return {GPIOD, GPIO_PIN_13};  // CLOCK
     case 8:  return {GPIOB, GPIO_PIN_8};   // LEFT_LATCH
     case 9:  return {GPIOB, GPIO_PIN_9};   // RIGHT_LATCH
     default: return {GPIOA, GPIO_PIN_0};   // fallback
   }
 }
 
+// SPI6 (D3 domain / APB4 — always-on, works on M4)
+// MOSI: PA7 (AF8), SCK: PB3 (AF8)
+static SPI_HandleTypeDef hspi6;
+
+static void spi6_init() {
+  __HAL_RCC_SPI6_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  // Release PB3 from JTAG TRACESWO — PB3 defaults to SWO after reset
+  DBGMCU->CR &= ~DBGMCU_CR_DBG_TRACECKEN;
+
+  // Configure PA7 as SPI6_MOSI (AF8)
+  GPIO_InitTypeDef gpio = {};
+  gpio.Pin = GPIO_PIN_7;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  gpio.Alternate = GPIO_AF8_SPI6;
+  HAL_GPIO_Init(GPIOA, &gpio);
+
+  // Configure PB3 as SPI6_SCK (AF8)
+  gpio.Pin = GPIO_PIN_3;
+  gpio.Alternate = GPIO_AF8_SPI6;
+  HAL_GPIO_Init(GPIOB, &gpio);
+
+  // Configure SPI6: Mode 0, MSB first, 16-bit, TX-only
+  hspi6.Instance = SPI6;
+  hspi6.Init.Mode = SPI_MODE_MASTER;
+  hspi6.Init.Direction = SPI_DIRECTION_2LINES_TXONLY;
+  hspi6.Init.DataSize = SPI_DATASIZE_16BIT;
+  hspi6.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi6.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi6.Init.NSS = SPI_NSS_SOFT;
+  hspi6.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+  hspi6.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi6.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi6.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi6.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
+  hspi6.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
+  HAL_SPI_Init(&hspi6);
+}
+
 class DacOutput {
 public:
-  DacOutput(int clock_pin, int data_pin, int left_latch_pin, int right_latch_pin,
-            int resolution)
-    : _clock_pin(clock_pin),
-      _data_pin(data_pin),
-      _left_latch_pin(left_latch_pin),
+  DacOutput(int left_latch_pin, int right_latch_pin, int resolution)
+    : _left_latch_pin(left_latch_pin),
       _right_latch_pin(right_latch_pin),
       _resolution(resolution),
       _pcm_player_L(nullptr),
       _pcm_player_R(nullptr),
       _playing(false),
+      _ticker_running(false),
       _completed_region(-1) {
   }
 
   void setup() {
-    // Still use Arduino pinMode for initial setup
-    pinMode(_clock_pin, OUTPUT);
-    pinMode(_data_pin, OUTPUT);
+    // Initialize SPI6 hardware (MOSI=PA7, SCK=PB3)
+    spi6_init();
+
+    // Configure latch pins as GPIO output
     pinMode(_left_latch_pin, OUTPUT);
     pinMode(_right_latch_pin, OUTPUT);
     digitalWrite(_left_latch_pin, LOW);
     digitalWrite(_right_latch_pin, LOW);
 
-    // Create players with STM32 HAL GPIO (faster than digitalWrite)
-    GpioPin clock = arduinoToGpio(_clock_pin);
-    GpioPin data = arduinoToGpio(_data_pin);
+    // Create players with SPI6 handle + latch GPIO
     GpioPin left_latch = arduinoToGpio(_left_latch_pin);
     GpioPin right_latch = arduinoToGpio(_right_latch_pin);
 
     _pcm_player_L = new PcmPlayer(_resolution,
-                                  clock.port, clock.pin,
-                                  data.port, data.pin,
+                                  &hspi6,
                                   left_latch.port, left_latch.pin);
 
     _pcm_player_R = new PcmPlayer(_resolution,
-                                  clock.port, clock.pin,
-                                  data.port, data.pin,
+                                  &hspi6,
                                   right_latch.port, right_latch.pin);
 
     g_dac_instance = this;
@@ -75,28 +111,23 @@ public:
     if (_playing) return false;
 
     _current_region = region_id;
-    unsigned long sample_period_us = 1000000UL / sample_rate;
 
     if (n_channels == 1) {
-      uint32_t count = (samples_count > MAX_SAMPLES) ? MAX_SAMPLES : samples_count;
-      for (uint32_t i = 0; i < count; i++) {
-        _buf_L[i] = samples[i];
-      }
-      _pcm_player_L->play_sample(_buf_L, count);
-
+      _pcm_player_L->play_from_volatile(samples, samples_count);
     } else if (n_channels == 2) {
       uint32_t frames = samples_count / 2;
-      uint32_t count = (frames > MAX_SAMPLES) ? MAX_SAMPLES : frames;
-      for (uint32_t i = 0; i < count; i++) {
-        _buf_L[i] = samples[i * 2];
-        _buf_R[i] = samples[i * 2 + 1];
-      }
-      _pcm_player_L->play_sample(_buf_L, count);
-      _pcm_player_R->play_sample(_buf_R, count);
+      _pcm_player_L->play_from_interleaved(samples, frames, 0, 2);
+      _pcm_player_R->play_from_interleaved(samples, frames, 1, 2);
     }
 
     _playing = true;
-    _ticker.attach_us(mbed::callback(&DacOutput::_isr_static), sample_period_us);
+
+    // Only attach Ticker once — keep it running between buffers
+    if (!_ticker_running) {
+      unsigned long sample_period_us = 1000000UL / sample_rate;
+      _ticker.attach_us(mbed::callback(&DacOutput::_isr_static), sample_period_us);
+      _ticker_running = true;
+    }
     return true;
   }
 
@@ -115,24 +146,20 @@ private:
   }
 
   void _isr() {
-    // Draw first (output current sample), then tick (advance to next)
-    _pcm_player_L->draw();
-    _pcm_player_R->draw();
-    _pcm_player_L->tick();
-    _pcm_player_R->tick();
+    if (!_playing) return;  // idle tick — Ticker stays running
+
+    _pcm_player_L->draw_and_tick();
+    _pcm_player_R->draw_and_tick();
 
     if (!_pcm_player_L->is_playing() && !_pcm_player_R->is_playing()) {
-      _ticker.detach();
       _playing = false;
       _completed_region = _current_region;
+      // DON'T detach — Ticker keeps running, ISR returns early until next buffer
     }
   }
 
-  // Derived from PcmPlayer (which derives from core_mem.h)
-  static const size_t MAX_SAMPLES = PcmPlayer::BUFFER_SIZE;
-
   // Pins
-  int _clock_pin, _data_pin, _left_latch_pin, _right_latch_pin;
+  int _left_latch_pin, _right_latch_pin;
 
   // Config
   int _resolution;
@@ -146,12 +173,10 @@ private:
 
   // State
   volatile bool _playing;
+  bool _ticker_running;
   volatile int _current_region;
   volatile int _completed_region;
 
-  // Sample buffers
-  int16_t _buf_L[MAX_SAMPLES];
-  int16_t _buf_R[MAX_SAMPLES];
 };
 
 #endif  // !__dac_output_h__
